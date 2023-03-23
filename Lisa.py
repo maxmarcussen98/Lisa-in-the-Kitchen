@@ -13,6 +13,9 @@ import time
 from datetime import date
 
 import yaml
+import shutil
+
+import requests
 
 def load_credentials(file_path: str) -> dict:
     with open(file_path, 'r') as file:
@@ -28,6 +31,9 @@ twilioID = credentials['TWILIO_ID']
 twilioToken = credentials['TWILIO_TOKEN']
 numberFrom = credentials['LISA_NUMBER']
 numberTo= credentials['CONFIRMATION_NUMBER']
+instaUsername = credentials['INSTAGRAM_USERNAME']
+instaPassword = credentials['INSTAGRAM_PASSWORD']
+access_token = credentials['INSTAGRAM_LONG_TOKEN']
 
 class Lisa:
     
@@ -93,6 +99,37 @@ class Lisa:
         urllib.request.urlretrieve(self.mostRecentImage, "images/recipe.jpg")
         
         
+    def makeInstagramPost(self, caption):
+        
+        image_url = self.mostRecentImage
+        
+        url = f"https://graph.facebook.com/v13.0/me/media?access_token={access_token}"
+        data = {
+            "image_url": image_url,
+            "caption": caption
+        }
+
+        # Step 1: Create a media object
+        response = requests.post(url, data=data)
+        if response.status_code != 200:
+            print("Error creating media object:", response.text)
+            return
+
+        media_id = response.json().get("id")
+        if not media_id:
+            print("Media ID not found in response:", response.text)
+            return
+
+        # Step 2: Publish the media object
+        url = f"https://graph.facebook.com/v13.0/{media_id}/publish?access_token={access_token}"
+        response = requests.post(url)
+        if response.status_code != 200:
+            print("Error publishing media object:", response.text)
+            return
+
+        print("Media published successfully:", response.json())
+        
+        
     def generateAndUploadPost(self, mealType='dessert', hints=''):
         
         mealPrompts = {
@@ -101,9 +138,9 @@ class Lisa:
             'dinner': "Write me a blog post for an easy dinner recipe!",
             'dessert': "Write me a blog post for a great dessert recipe that you like to make for your kids!"
         }
-        
+
         categories = {'breakfast': 'Breakfast', 'lunch': 'Lunches', 'dinner': 'Easy Dinners', 'dessert': 'Desserts'}
-        
+
         ingredients = ['Salt',
                          'Pepper',
                          'Sugar',
@@ -204,10 +241,10 @@ class Lisa:
                          'Squid',
                          'Tofu',
                          'Seaweed']
-        
+
         posted=False
 
-        
+
         print("Generating recipe...")
         prompt = mealPrompts[mealType]+' Only provide me the text, not the title, but write the recipe exactly as a mom would.'
         print(f"Meal type: {mealType}")
@@ -225,12 +262,12 @@ class Lisa:
         postContent = self.getResponse(prompt)
 
         print(self.mostRecentRecipes[0])
-        
+
         print("getting Actual meal category...")
         actualMealType = self.getResponse("\n\nIn one word, between the options breakfast, lunch, dinner, and dessert, in lowercase and with no punctuation, what type of meal is the above recipe?")
         print(actualMealType)
         mealType=actualMealType
-        
+
         print("Getting post title...")
         postTitle = self.getResponse("\n\nWhat's a SEO optimized title for the above post? Make sure you include the recipe name.")
         print(postTitle)
@@ -243,10 +280,14 @@ class Lisa:
         print("Generating image...")
         self.getImage(imagePrompt)
 
+        print("Generating Instagram caption...")
+        instaCaption = self.getResponse(f"\n\nWrite me an Instagram post for this recipe. The only photo in the post will be the image you just generated. Make sure you provide a link to lisainthekitchen.com since that's where the recipe will be.")
+        print(instaCaption)
+
         print("Image:")
         print(self.mostRecentImage)
         print("Verify that you want to post this recipe (y/n):")
-        
+
         client = twilioClient(twilioID, twilioToken)
         message = client.messages.create(
             to=numberTo, 
@@ -255,14 +296,14 @@ class Lisa:
             media_url=self.mostRecentImage)
 
         #yesorno = input()
-        
+
         yesorno = 'n'
         startTime = time.time()
         while yesorno == 'n': 
-            
+
             mostRecent = client.messages.list()[0].body
             #mostRecent1 = client.messages.list()[1].body
-            
+
             if mostRecent in ['Y', 'y', 'Yes', 'yes']:
                 yesorno = 'y'
             elif mostRecent in ['N', 'n', 'No', 'no']:
@@ -271,20 +312,20 @@ class Lisa:
                 print("Waited too long.")
                 yesorno='break'
             time.sleep(1)
-            
+
             #print(mostRecent)
-        
+
         if yesorno=="y":
             posted=True
-        
-        
+
+
         if posted:
-        
+
             # bunch of wordpress stuff to fetch image
             wp = Client('https://lisainthekitchen.com/xmlrpc.php', 'maxmarcussen98', '$Alazar98')
 
             # set to the path to your file
-            filename = 'images/recipe.jpg'
+            imageFilename = 'images/recipe.jpg'
 
             # prepare metadata
             data = {
@@ -293,7 +334,7 @@ class Lisa:
             }
 
             # read the binary file and let the XMLRPC library encode it into base64
-            with open(filename, 'rb') as img:
+            with open(imageFilename, 'rb') as img:
                     data['bits'] = xmlrpc_client.Binary(img.read())
 
             response = wp.call(media.UploadFile(data))
@@ -318,21 +359,25 @@ class Lisa:
             wp.call(posts.EditPost(post.id, post))
 
             print("Done")
-            
+
             client.messages.create(
                 to=numberTo, 
                 from_=numberFrom,
                 body=f"Recipe posted! Please go to lisainthekitchen.com to confirm",
             )
-            
+
+            print("Posting to instagram...")
+            self.makeInstagramPost(caption=instaCaption)
+
         else:
             print("Try again.")
-            
+
             client.messages.create(
                 to=numberTo, 
                 from_=numberFrom,
                 body=f"Recipe not posted.",
             )
+
         
     def autoPost(self):
         
